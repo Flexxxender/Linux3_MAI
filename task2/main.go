@@ -1,84 +1,59 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"io"
+	"io/fs"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
 )
 
+const queueKey = "/tmp/queue"
+
 func main() {
-	// if len(os.Args) < 3 {
-	// 	os.Exit(1)
-	// }
-
-	// file1, file2 := os.Args[1], os.Args[2]
-	// if file1 == "" || file2 == "" {
-	// 	os.Exit(1)
-	// }
-
-	// Удаляем существующий сокет (если такой существует)
-	os.Remove("/tmp/mysocket")
-
-	// Создаем сокет для прослушивания
-	addr, err := net.ResolveUnixAddr("unixgram", "/tmp/mysocket")
-	if err != nil {
-		fmt.Println("Ошибка при разрешении адреса:", err)
-		return
+	if len(os.Args) < 3 {
+		fmt.Println("Not enough arguments")
+		os.Exit(1)
 	}
 
-	// Слушаем сокет
-	conn, err := net.ListenUnixgram("unixgram", addr)
-	if err != nil {
-		fmt.Println("Ошибка при прослушивании сокета:", err)
-		return
+	file1, file2 := os.Args[1], os.Args[2]
+	if file1 == "" || file2 == "" {
+		fmt.Println("One of filenames is empty")
+		os.Exit(1)
 	}
-	defer os.Remove("/tmp/mysocket") // Удаляем сокет после завершения
-	firstCmd := exec.Command("./bin/t1", "aboba")
-	secondCmd := exec.Command("./bin/t1", "hui")
+
+	consumer, err := CreateConnection(queueKey)
+	if err != nil {
+		fmt.Println("Error to connect: ", err)
+		os.Exit(1)
+	}
+
+	firstCmd := exec.Command("./bin/t1", file1)
+	secondCmd := exec.Command("./bin/t1", file2)
 	if err := firstCmd.Run(); err != nil {
 		fmt.Println(err)
+		os.Exit(1)
 	}
 	if err := secondCmd.Run(); err != nil {
 		fmt.Println(err)
+		os.Exit(1)
 	}
 
-	fmt.Println("Ожидание данных...")
-
-	// Читаем данные
-	buf := make([]byte, 1024)
-	n, _, err := conn.ReadFromUnix(buf)
+	firstMessage, err := consumer.ReadMessage()
 	if err != nil {
-		fmt.Println("Ошибка при чтении данных:", err)
-		return
+		fmt.Println("Error reading message: ", err)
+		os.Exit(1)
 	}
 
-	fmt.Printf("Получено %d байт данных: %s\n", n, string(buf[:n]))
-
-	n, _, err = conn.ReadFromUnix(buf)
+	secondMessage, err := consumer.ReadMessage()
 	if err != nil {
-		fmt.Println("Ошибка при чтении данных:", err)
-		return
+		fmt.Println("Error reading message: ", err)
+		os.Exit(1)
 	}
 
-	fmt.Printf("Получено %d байт данных: %s\n", n, string(buf[:n]))
-
-	// firstCmd := exec.Command("./bin/t1", file1)
-	// secondCmd := exec.Command("./bin/t1", file2)
-	// firstBytes := getBytes(firstCmd)
-	// secondBytes := getBytes(secondCmd)
-
-	// ioutil.WriteFile("res.txt", xorBytes(firstBytes, secondBytes), fs.FileMode(0777))
-}
-
-func getBytes(command *exec.Cmd) []byte {
-	reader, writer := io.Pipe()
-	command.Stdout = writer
-	command.Start()
-	data := make([]byte, 1024)
-	n, _ := reader.Read(data)
-	return data[:n]
+	ioutil.WriteFile("res.txt", xorBytes(firstMessage, secondMessage), fs.FileMode(0777))
 }
 
 func xorBytes(text, key []byte) []byte {
@@ -96,4 +71,56 @@ func xorBytes(text, key []byte) []byte {
 	}
 
 	return result
+}
+
+type MessageConsumer struct {
+	connection *net.UnixConn
+	address    string
+}
+
+type ChainMessage struct {
+	LastInChain bool
+	Content     []byte
+}
+
+func CreateConnection(address string) (*MessageConsumer, error) {
+	os.Remove(address)
+	addr, err := net.ResolveUnixAddr("unixgram", address)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.ListenUnixgram("unixgram", addr)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MessageConsumer{connection: conn, address: address}, nil
+}
+
+func (c *MessageConsumer) ReadMessage() ([]byte, error) {
+	buf := make([]byte, 1500)
+	result := make([]byte, 0, 1024)
+	isLastMessage := false
+	for !isLastMessage {
+		n, _, err := c.connection.ReadFromUnix(buf)
+		if err != nil {
+			return nil, err
+		}
+
+		bytes := buf[:n]
+		var message ChainMessage
+		err = json.Unmarshal(bytes, &message)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, message.Content...)
+		isLastMessage = message.LastInChain
+	}
+	fmt.Printf("result: %v\n", len(result))
+	return result, nil
+}
+
+func (c *MessageConsumer) CloseConnection() {
+	os.Remove(c.address)
+	c.connection.Close()
 }

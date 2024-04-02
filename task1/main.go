@@ -1,75 +1,89 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 )
 
+const (
+	queueKey       = "/tmp/queue"
+	bytesInMessage = 1024
+)
+
 func main() {
-	// Адрес Unix сокета
-	addr, err := net.ResolveUnixAddr("unixgram", "/tmp/mysocket")
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: go run main.go <filename>")
+		os.Exit(1)
+	}
+
+	filePath := os.Args[1]
+
+	file, err := os.Open(filePath)
 	if err != nil {
-		fmt.Println("Ошибка при разрешении адреса:", err)
-		return
+		fmt.Println("Error opening file: ", err)
+		os.Exit(1)
+	}
+	defer file.Close()
+
+	body, err := io.ReadAll(file)
+	if err != nil {
+		fmt.Println("Error reading file: ", err)
+		os.Exit(1)
+	}
+	queue, err := CreateConnection(queueKey)
+	if err != nil {
+		fmt.Println("Error while open connection: ", err)
+		os.Exit(1)
+	}
+	defer queue.CloseConnection()
+
+	for len(body) > bytesInMessage {
+		buf := body[:bytesInMessage]
+		message := ChainMessage{LastInChain: false, Content: buf}
+		queue.SendMessage(message)
+		body = body[bytesInMessage:]
+	}
+
+	message := ChainMessage{LastInChain: true, Content: body}
+	queue.SendMessage(message)
+}
+
+type MessageQueue struct {
+	connection *net.UnixConn
+}
+
+type ChainMessage struct {
+	LastInChain bool
+	Content     []byte
+}
+
+func CreateConnection(address string) (*MessageQueue, error) {
+	addr, err := net.ResolveUnixAddr("unixgram", address)
+	if err != nil {
+		return nil, err
 	}
 
 	// Устанавливаем соединение с Unix сокетом
 	conn, err := net.DialUnix("unixgram", nil, addr)
 	if err != nil {
-		fmt.Println("Ошибка при установке соединения:", err)
-		return
+		return nil, err
 	}
-	defer conn.Close()
 
-	// Отправляем данные
-	msg := []byte(os.Args[1])
-	_, err = conn.Write(msg)
+	return &MessageQueue{connection: conn}, nil
+}
+
+func (q *MessageQueue) SendMessage(message ChainMessage) error {
+	messageBody, err := json.Marshal(message)
 	if err != nil {
-		fmt.Println("Ошибка при отправке данных:", err)
-		return
+		return err
 	}
+	_, err = q.connection.Write(messageBody)
+	return err
+}
 
-	fmt.Println("Данные успешно отправлены!")
-
-	// if len(os.Args) < 2 {
-	// 	fmt.Println("Usage: go run main.go <filename>")
-	// 	os.Exit(1)
-	// }
-
-	// // Получаем путь к файлу из аргументов командной строки
-	// filePath := os.Args[1]
-
-	// // Открываем файл для чтения
-	// file, err := os.Open(filePath)
-	// if err != nil {
-	// 	fmt.Println("Error opening file:", err)
-	// 	os.Exit(1)
-	// }
-	// defer file.Close()
-
-	// // Создаем новый процесс для вывода данных
-	// cmd := exec.Command("cat") // Пример использования команды cat для вывода содержимого файла
-	// cmd.Stdout = os.Stdout     // Направляем стандартный вывод процесса в стандартный вывод текущей программы
-
-	// // Запускаем процесс
-	// err = cmd.Start()
-	// if err != nil {
-	// 	fmt.Println("Error starting command:", err)
-	// 	os.Exit(1)
-	// }
-
-	// // Копируем содержимое файла в канал Pipe (в стандартный ввод процесса)
-	// _, err = io.Copy(cmd.Stdout, file)
-	// if err != nil {
-	// 	fmt.Println("Error writing to pipe:", err)
-	// 	os.Exit(1)
-	// }
-
-	// // Ждем завершения процесса
-	// err = cmd.Wait()
-	// if err != nil {
-	// 	fmt.Println("Error waiting for command:", err)
-	// 	os.Exit(1)
-	// }
+func (q *MessageQueue) CloseConnection() {
+	q.connection.Close()
 }

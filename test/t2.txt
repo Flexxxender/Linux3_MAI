@@ -1,1 +1,69 @@
+package main
+
+import (
+	"fmt"
+	"io"
+	"net"
+	"os"
+)
+
+const queueKey = "/tmp/queue"
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: go run main.go <filename>")
+		os.Exit(1)
+	}
+
+	filePath := os.Args[1]
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		fmt.Println("Error opening file: ", err)
+		os.Exit(1)
+	}
+	defer file.Close()
+
+	message, err := io.ReadAll(file)
+	if err != nil {
+		fmt.Println("Error reading file: ", err)
+		os.Exit(1)
+	}
+	queue, err := CreateConnection(queueKey)
+	if err != nil {
+		fmt.Println("Error while open connection: ", err)
+		os.Exit(1)
+	}
+	defer queue.CloseConnection()
+
+	queue.SendMessage(message)
+}
+
+type MessageQueue struct {
+	connection *net.UnixConn
+}
+
+func CreateConnection(address string) (*MessageQueue, error) {
+	addr, err := net.ResolveUnixAddr("unixgram", address)
+	if err != nil {
+		return nil, err
+	}
+
+	// Устанавливаем соединение с Unix сокетом
+	conn, err := net.DialUnix("unixgram", nil, addr)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MessageQueue{connection: conn}, nil
+}
+
+func (q *MessageQueue) SendMessage(messageBody []byte) error {
+	_, err := q.connection.Write(messageBody)
+	return err
+}
+
+func (q *MessageQueue) CloseConnection() {
+	q.connection.Close()
+}
 test2asdasd
